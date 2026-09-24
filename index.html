@@ -118,6 +118,91 @@
             text-align: right;
         }
 
+        /* ===== 技能面板（冷却显示） ===== */
+        .skill-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 14px;
+            background: #16213e;
+            padding: 8px 20px;
+            border-radius: 12px;
+            border: 1px solid #0f3460;
+            font-size: 14px;
+        }
+
+        .skill-bar .label {
+            color: #888;
+            white-space: nowrap;
+        }
+
+        .skill-bar .skill-key {
+            color: #ffd43b;
+            font-weight: bold;
+        }
+
+        .skill-cooldown-wrapper {
+            width: 120px;
+            height: 8px;
+            background: #0f3460;
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .skill-cooldown-fill {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, #ffd43b, #ff922b);
+            border-radius: 4px;
+            transition: width 0.1s linear;
+        }
+
+        .skill-cooldown-fill.cooling {
+            background: linear-gradient(90deg, #555, #777);
+        }
+
+        .skill-status {
+            min-width: 60px;
+            text-align: right;
+            font-weight: bold;
+        }
+
+        .skill-status.ready {
+            color: #ffd43b;
+        }
+
+        .skill-status.cooling {
+            color: #888;
+        }
+
+        /* ===== 手机端技能按钮 ===== */
+        .skill-btn-mobile {
+            display: none;
+            margin-top: 12px;
+            padding: 10px 24px;
+            font-size: 14px;
+            background: linear-gradient(135deg, #ffd43b, #ff922b);
+            color: #1a1a2e;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: bold;
+            letter-spacing: 1px;
+            touch-action: manipulation;
+            transition: transform 0.15s, opacity 0.15s;
+        }
+
+        .skill-btn-mobile:active {
+            transform: scale(0.9);
+        }
+
+        .skill-btn-mobile.disabled {
+            opacity: 0.4;
+            background: #555;
+            color: #999;
+        }
+
         /* ===== 食物图例 ===== */
         .food-legend {
             display: flex;
@@ -254,11 +339,13 @@
             .speed-control input[type="range"] { width: 100px; }
             .food-legend { gap: 10px; font-size: 11px; flex-wrap: wrap; justify-content: center; }
             .virtual-dpad { display: block; }
+            .skill-btn-mobile { display: inline-block; }
         }
 
         /* 触屏设备也显示方向键 */
         @media (pointer: coarse) {
             .virtual-dpad { display: block; }
+            .skill-btn-mobile { display: inline-block; }
         }
     </style>
 </head>
@@ -299,6 +386,15 @@
         </div>
     </div>
 
+    <!-- 技能冷却面板 -->
+    <div class="skill-bar">
+        <span class="label">磁力吸取 <span class="skill-key">[E]</span></span>
+        <div class="skill-cooldown-wrapper">
+            <div class="skill-cooldown-fill" id="cooldownFill"></div>
+        </div>
+        <span class="skill-status ready" id="skillStatus">就绪</span>
+    </div>
+
     <!-- 游戏画布 -->
     <div class="canvas-wrapper">
         <canvas id="gameCanvas" width="400" height="400"></canvas>
@@ -317,6 +413,9 @@
         <div class="dpad-btn dpad-left"  data-dir="left">◀</div>
         <div class="dpad-btn dpad-right" data-dir="right">▶</div>
     </div>
+
+    <!-- 手机端技能按钮 -->
+    <button class="skill-btn-mobile" id="skillBtnMobile">⚡ 磁力吸取</button>
 
     <script>
         // ===== 游戏常量 =====
@@ -338,6 +437,11 @@
         // 等级1最慢(200ms)，等级5默认(150ms)，等级10最快(50ms)
         const SPEED_MAP = [200, 175, 160, 155, 150, 120, 100, 80, 65, 50];
 
+        // ===== 磁力吸取技能常量 =====
+        const MAGNET_RANGE = 3;           // 吸取范围（格数，以蛇头为中心的曼哈顿距离）
+        const MAGNET_COOLDOWN = 10000;    // 冷却时间（毫秒，10秒）
+        const MAGNET_EFFECT_DURATION = 500; // 吸取特效持续时间（毫秒）
+
         // ===== 获取 DOM 元素 =====
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
@@ -348,6 +452,9 @@
         const restartBtn = document.getElementById('restartBtn');
         const speedSlider = document.getElementById('speedSlider');
         const speedValueEl = document.getElementById('speedValue');
+        const cooldownFill = document.getElementById('cooldownFill');
+        const skillStatus = document.getElementById('skillStatus');
+        const skillBtnMobile = document.getElementById('skillBtnMobile');
 
         // ===== 游戏状态变量 =====
         let snake = [];          // 蛇身体数组，每个元素为 {x, y}
@@ -359,6 +466,12 @@
         let speed = INITIAL_SPEED; // 当前速度
         let gameLoop = null;     // 游戏循环定时器
         let isGameOver = false;  // 游戏是否结束
+
+        // ===== 磁力吸取技能状态 =====
+        let magnetReady = true;           // 技能是否可用
+        let magnetCooldownStart = 0;      // 冷却开始时间戳
+        let magnetEffectTimer = 0;        // 特效剩余时间
+        let magnetEffectActive = false;   // 特效是否正在播放
 
         // ===== 初始化游戏 =====
         function initGame() {
@@ -374,6 +487,13 @@
             nextDirection = 'right';
             score = 0;
             isGameOver = false;
+
+            // 重置磁力技能状态
+            magnetReady = true;
+            magnetCooldownStart = 0;
+            magnetEffectTimer = 0;
+            magnetEffectActive = false;
+            updateSkillUI();
 
             // 根据滑块设置速度
             speed = getSpeedFromSlider();
@@ -518,6 +638,9 @@
 
         // ===== 绘制画面 =====
         function draw() {
+            // 更新冷却进度
+            updateMagnetCooldown();
+
             // 清空画布
             ctx.fillStyle = '#0f3460';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -602,6 +725,9 @@
             // 重置阴影
             ctx.shadowColor = 'transparent';
             ctx.shadowBlur = 0;
+
+            // 绘制磁力吸取特效
+            drawMagnetEffect();
         }
 
         // ===== 辅助函数：绘制圆角矩形 =====
@@ -617,6 +743,113 @@
             ctx.lineTo(x, y + radius);
             ctx.quadraticCurveTo(x, y, x + radius, y);
             ctx.closePath();
+        }
+
+        // ===== 磁力吸取技能 =====
+        function activateMagnet() {
+            if (!magnetReady || isGameOver) return;
+
+            const head = snake[0];
+            const dist = Math.abs(food.x - head.x) + Math.abs(food.y - head.y);
+
+            // 触发特效（无论是否吸到都播放动画）
+            magnetEffectActive = true;
+            magnetEffectTimer = MAGNET_EFFECT_DURATION;
+
+            if (dist <= MAGNET_RANGE) {
+                // 食物在范围内，直接吸收
+                const foodType = food.type;
+
+                score += foodType.score;
+                scoreEl.textContent = score;
+
+                if (score > highScore) {
+                    highScore = score;
+                    highScoreEl.textContent = highScore;
+                    localStorage.setItem('snakeHighScore', highScore);
+                }
+
+                for (let i = 1; i < foodType.length; i++) {
+                    snake.push({ x: snake[snake.length - 1].x, y: snake[snake.length - 1].y });
+                }
+
+                generateFood();
+            }
+
+            // 进入冷却
+            magnetReady = false;
+            magnetCooldownStart = Date.now();
+            updateSkillUI();
+        }
+
+        // ===== 更新冷却进度（每帧调用） =====
+        function updateMagnetCooldown() {
+            if (magnetReady) return;
+
+            const elapsed = Date.now() - magnetCooldownStart;
+            const remaining = MAGNET_COOLDOWN - elapsed;
+
+            if (remaining <= 0) {
+                magnetReady = true;
+                magnetCooldownStart = 0;
+                updateSkillUI();
+            } else {
+                const pct = (remaining / MAGNET_COOLDOWN) * 100;
+                cooldownFill.style.width = pct + '%';
+                cooldownFill.classList.add('cooling');
+                skillStatus.textContent = (remaining / 1000).toFixed(1) + 's';
+                skillStatus.className = 'skill-status cooling';
+                skillBtnMobile.classList.add('disabled');
+                skillBtnMobile.textContent = '⚡ 冷却中';
+            }
+
+            // 更新特效计时
+            if (magnetEffectActive) {
+                magnetEffectTimer -= speed;
+                if (magnetEffectTimer <= 0) {
+                    magnetEffectActive = false;
+                }
+            }
+        }
+
+        // ===== 更新技能UI状态 =====
+        function updateSkillUI() {
+            if (magnetReady) {
+                cooldownFill.style.width = '100%';
+                cooldownFill.classList.remove('cooling');
+                skillStatus.textContent = '就绪';
+                skillStatus.className = 'skill-status ready';
+                skillBtnMobile.classList.remove('disabled');
+                skillBtnMobile.textContent = '⚡ 磁力吸取';
+            }
+        }
+
+        // ===== 绘制磁力吸取特效 =====
+        function drawMagnetEffect() {
+            if (!magnetEffectActive) return;
+
+            const head = snake[0];
+            const cx = head.x * CELL_SIZE + CELL_SIZE / 2;
+            const cy = head.y * CELL_SIZE + CELL_SIZE / 2;
+            const maxRadius = MAGNET_RANGE * CELL_SIZE;
+            const progress = 1 - (magnetEffectTimer / MAGNET_EFFECT_DURATION);
+            const radius = maxRadius * progress;
+            const alpha = 0.5 * (1 - progress);
+
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255, 212, 59, ' + alpha + ')';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // 内圈
+            ctx.strokeStyle = 'rgba(255, 146, 43, ' + (alpha * 0.6) + ')';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius * 0.6, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
         }
 
         // ===== 游戏结束 =====
@@ -663,6 +896,8 @@
                 case 's': case 'S': changeDirection('down'); break;
                 case 'a': case 'A': changeDirection('left'); break;
                 case 'd': case 'D': changeDirection('right'); break;
+                // E 键释放磁力吸取
+                case 'e': case 'E': activateMagnet(); break;
             }
         });
 
@@ -690,6 +925,15 @@
                 clearInterval(gameLoop);
                 gameLoop = setInterval(gameStep, speed);
             }
+        });
+
+        // ===== 手机端技能按钮事件 =====
+        skillBtnMobile.addEventListener('touchstart', function(e) {
+            e.preventDefault();
+            activateMagnet();
+        });
+        skillBtnMobile.addEventListener('click', function() {
+            activateMagnet();
         });
 
         // ===== 重新开始按钮 =====
